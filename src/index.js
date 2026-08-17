@@ -182,8 +182,10 @@ export default {
         <div class="stat-val">¥${account.cash.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">持仓股票市值</div>
-        <div class="stat-val" style="color: var(--primary);">¥${account.marketValue.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}</div>
+        <div class="stat-label">雪球官方实盘组合</div>
+        <div class="stat-val" style="font-size:1.1rem;">
+          <a href="https://xueqiu.com/p/ZH3664845" target="_blank" style="color:var(--primary); text-decoration:none;">ZH3664845 ↗</a>
+        </div>
       </div>
       <div class="stat-card">
         <div class="stat-label">当前仓位占比</div>
