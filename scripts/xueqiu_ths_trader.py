@@ -16,11 +16,11 @@ import time
 import json
 import urllib.request
 
-# 配置项 (可从环境变量或本地读取)
+# 配置项 (从环境变量或系统读取)
 XUEQIU_COOKIE = os.getenv("XUEQIU_COOKIE", "")  # 雪球网页登录 Cookie (包含 xq_a_token)
-XUEQIU_CUBE = os.getenv("XUEQIU_CUBE", "ZH3664845") # 你的雪球模拟炒股组合代码 (已绑定天啦噜去的组合)
-TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "8638970213:AAEFSue15RAajMQE1iKz4K9yQoNjT5-jkOU")
-TG_CHAT_ID = os.getenv("TG_CHAT_ID", "1099933423")
+XUEQIU_CUBE = os.getenv("XUEQIU_CUBE", "ZH3664845") # 你的雪球模拟炒股组合代码
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
+TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
 
 class XueqiuTrader:
     """雪球模拟炒股 (组合调仓) 自动化驱动器"""

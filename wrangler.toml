@@ -7,9 +7,7 @@ binding = "STOCK_DATA"
 id = "5a7168f38c7e47a48154f64812014037"
 
 [vars]
-TG_BOT_TOKEN = "8638970213:AAEFSue15RAajMQE1iKz4K9yQoNjT5-jkOU"
-TG_CHAT_ID = "1099933423"
-SYNC_SECRET = "wangrunxi_screener_sync_key"
+# 敏感凭证 (TG_BOT_TOKEN / TG_CHAT_ID / SYNC_SECRET) 通过 wrangler secret 加密保存，不在配置文件中明文暴露
 
 [triggers]
 # 全自动免人工触发：工作日盘后 15:35 (UTC 07:35) 自动执行全量扫描、更新KV并推送 Telegram
