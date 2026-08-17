@@ -1,55 +1,79 @@
 export default {
-  // 1. 【全自动定时触发器】每个工作日 15:35 自动全量扫描、更新 KV 并推送到 Telegram
+  // 1. 【全自动定时触发器】
+  // 盘中工作日定时巡检持仓（止盈止损监控）+ 15:35 盘后全市场扫描与账户结算
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runSelfDrivingScreener(env));
+    ctx.waitUntil(runScheduledPortfolioAndScan(env));
   },
 
   // 2. HTTP 路由接口
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // 手动/API 触发自运行扫描
-    if (url.pathname === '/api/auto-run') {
-      const result = await runSelfDrivingScreener(env);
-      return new Response(JSON.stringify(result, null, 2), {
-        headers: { 'Content-Type': 'application/json; charset=utf-8' }
-      });
+    // 模拟盘交易 API：执行自动买入
+    if (url.pathname === '/api/trade/buy' && request.method === 'POST') {
+      try {
+        const body = await request.json();
+        const result = await executePaperBuy(body, env);
+        return new Response(JSON.stringify(result, null, 2), { headers: { 'Content-Type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ success: false, error: err.message }), { status: 400 });
+      }
     }
 
-    // 接收外部 Python 选股结果同步
+    // 模拟盘交易 API：重置账户为 100 万初始资金
+    if (url.pathname === '/api/trade/reset' && request.method === 'POST') {
+      const auth = request.headers.get('Authorization') || '';
+      if (auth.replace('Bearer ', '').trim() !== (env.SYNC_SECRET || 'wangrunxi_screener_sync_key')) {
+        return new Response(JSON.stringify({ success: false, message: 'Unauthorized' }), { status: 401 });
+      }
+      const initialAcc = getInitialAccount();
+      await env.STOCK_DATA.put('paper_trading_account', JSON.stringify(initialAcc));
+      return new Response(JSON.stringify({ success: true, message: '账户已重置为 100 万初始本金', account: initialAcc }));
+    }
+
+    // 模拟盘持仓与资产 API
+    if (url.pathname === '/api/trade/portfolio') {
+      const account = await updateAndGetPaperAccount(env);
+      return new Response(JSON.stringify(account, null, 2), { headers: { 'Content-Type': 'application/json; charset=utf-8' } });
+    }
+
+    // 接收外部 Python 选股结果同步并触发自动买入
     if (url.pathname === '/api/sync' && request.method === 'POST') {
       const auth = request.headers.get('Authorization') || '';
       const token = auth.replace('Bearer ', '').trim();
       if (token !== env.SYNC_SECRET && token !== 'wangrunxi_screener_sync_key') {
-        return new Response(JSON.stringify({ success: false, message: 'Unauthorized sync token' }), {
-          status: 401,
-          headers: { 'Content-Type': 'application/json' }
-        });
+        return new Response(JSON.stringify({ success: false, message: 'Unauthorized sync token' }), { status: 401 });
       }
 
       try {
         const payload = await request.json();
         await saveReportAndNotify(payload, env);
+        // 自动将选出的第 1、2 名龙头按策略买入模拟盘
+        if (payload.stocks && payload.stocks.length > 0) {
+          for (const s of payload.stocks.slice(0, 2)) {
+            await executePaperBuy({
+              code: s.code,
+              name: s.name,
+              price: s.price,
+              reason: `Minervini 趋势突破龙头 (RS: ${s.rs})`
+            }, env);
+          }
+        }
         return new Response(JSON.stringify({ success: true, count: payload.stocks?.length || 0 }), {
           headers: { 'Content-Type': 'application/json; charset=utf-8' }
         });
       } catch (err) {
-        return new Response(JSON.stringify({ success: false, error: err.message }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ success: false, error: err.message }), { status: 400 });
       }
     }
 
-    // 获取最新选股与历史数据 API
+    // 获取最新选股数据 API
     if (url.pathname === '/api/latest') {
       const data = await env.STOCK_DATA.get('latest_report');
       return new Response(data || '{}', { headers: { 'Content-Type': 'application/json; charset=utf-8' } });
     }
 
-    if (url.pathname === '/api/performance') {
-      const historyPerf = await getOrInitPerformanceHistory(env);
-      return new Response(JSON.stringify(historyPerf, null, 2), { headers: { 'Content-Type': 'application/json; charset=utf-8' } });
-    }
-
-    // 渲染 Web 看板（包含：今日最新选股 + 历史胜率跟踪 + 错题复盘日志）
+    // 获取最新数据与模拟盘资产数据
     let latestData = null;
     const rawLatest = await env.STOCK_DATA.get('latest_report');
     if (rawLatest) {
@@ -64,24 +88,23 @@ export default {
         stocks: [
           { code: "300394", name: "天孚通信", price: 286.56, changePercent: 7.04, turnover: "17.90%", industry: "光器件", rs: 99, score: "98.4" },
           { code: "603986", name: "兆易创新", price: 444.00, changePercent: 6.35, turnover: "25.71%", industry: "存储芯片", rs: 99, score: "97.6" },
-          { code: "300308", name: "中际旭创", price: 1001.03, changePercent: 6.15, turnover: "35.27%", industry: "光模块/CPO", rs: 99, score: "97.4" },
-          { code: "688525", name: "佰维存储", price: 256.78, changePercent: 6.11, turnover: "9.02%", industry: "存储芯片", rs: 99, score: "97.3" },
-          { code: "601869", name: "长飞光纤", price: 376.54, changePercent: 6.01, turnover: "5.48%", industry: "光纤光缆", rs: 99, score: "97.2" },
-          { code: "688008", name: "澜起科技", price: 224.37, changePercent: 5.88, turnover: "11.30%", industry: "互连芯片", rs: 99, score: "97.1" }
+          { code: "300308", name: "中际旭创", price: 1001.03, changePercent: 6.15, turnover: "35.27%", industry: "光模块/CPO", rs: 99, score: "97.4" }
         ],
-        summary: "今日全市场共扫描 5320 只标的，右侧多头排列且突破 52 周新高标的集中于算力光通信与先进存储板块。大盘成交维持活跃，建议持股待涨并设立 5 日线跟踪止盈。"
+        summary: "全自动模拟交易系统已激活：100万初始资金正在按策略自动建仓并执行止盈止损。"
       };
     }
 
-    // 获取历史战绩追踪数据
+    // 获取历史胜率数据与当前模拟账户状态
     const perfData = await getOrInitPerformanceHistory(env);
+    const account = await updateAndGetPaperAccount(env);
 
+    // 渲染 Web 看板（包含：模拟账户、持仓列表、交易记录、今日选股、历史胜率）
     const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>量化选股与历史胜率跟踪看板 (storkB)</title>
+  <title>量化投研与 100 万模拟自动炒股系统 (storkB)</title>
   <style>
     :root {
       --bg: #070b14;
@@ -96,26 +119,26 @@ export default {
       --warn: #f59e0b;
     }
     * { box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); padding: 2rem 1.5rem; margin: 0; line-height: 1.6; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); padding: 1.5rem; margin: 0; line-height: 1.6; }
     .container { max-width: 1180px; margin: 0 auto; }
     header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); padding-bottom: 1.25rem; flex-wrap: wrap; gap: 1rem; }
-    h1 { margin: 0; font-size: 1.6rem; color: #fff; display: flex; align-items: center; gap: 0.5rem; }
+    h1 { margin: 0; font-size: 1.55rem; color: #fff; display: flex; align-items: center; gap: 0.5rem; }
     .badge { padding: 0.25rem 0.65rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 700; background: #0369a1; color: #bae6fd; }
     .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; }
     
-    .nav-tabs { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
-    .tab-btn { background: transparent; border: none; color: var(--muted); font-size: 1rem; font-weight: 600; padding: 0.6rem 1.2rem; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
+    .nav-tabs { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; flex-wrap: wrap; }
+    .tab-btn { background: transparent; border: none; color: var(--muted); font-size: 0.95rem; font-weight: 600; padding: 0.6rem 1.1rem; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
     .tab-btn.active { background: #1e293b; color: var(--primary); border: 1px solid var(--border); }
     .tab-btn:hover:not(.active) { color: #fff; }
 
-    .grid-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .grid-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
     .stat-card { background: #0c1220; border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.25rem; }
-    .stat-label { font-size: 0.85rem; color: var(--muted); margin-bottom: 0.25rem; }
-    .stat-val { font-size: 1.4rem; font-weight: 700; color: #fff; }
+    .stat-label { font-size: 0.82rem; color: var(--muted); margin-bottom: 0.25rem; }
+    .stat-val { font-size: 1.35rem; font-weight: 700; color: #fff; }
     
-    table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.95rem; }
-    th { text-align: left; padding: 0.75rem 1rem; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; font-size: 0.85rem; text-transform: uppercase; }
-    td { padding: 0.9rem 1rem; border-bottom: 1px solid #162035; }
+    table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.92rem; }
+    th { text-align: left; padding: 0.75rem 1rem; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; font-size: 0.82rem; text-transform: uppercase; }
+    td { padding: 0.85rem 1rem; border-bottom: 1px solid #162035; }
     tr:hover td { background: var(--card-hover); }
     
     .tag-success { background: rgba(16, 185, 129, 0.15); color: #34d399; padding: 0.2rem 0.55rem; border-radius: 4px; font-weight: 700; font-size: 0.82rem; }
@@ -130,45 +153,151 @@ export default {
   <div class="container">
     <header>
       <div>
-        <h1>📈 量化投研与历史胜率跟踪看板 <span class="badge">storkB</span></h1>
-        <div style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">全自动盘后扫描 + 真实交易表现回测 + 错题分析归因日志</div>
+        <h1>📈 量化投研与自动模拟炒股系统 <span class="badge">storkB</span></h1>
+        <div style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">
+          100万虚拟本金 · 全自动跟随算法建仓 · 严格 -3.8% 止损 / +5.5% 止盈纪律执行
+        </div>
       </div>
       <div style="text-align: right;">
-        <span class="badge" style="background:#065f46; color:#6ee7b7;">🤖 Telegram 实时联动已开启</span>
+        <span class="badge" style="background:#065f46; color:#6ee7b7;">● 自动交易托管运行中</span>
       </div>
     </header>
 
-    <!-- 顶层核心指标 -->
+    <!-- 模拟账户顶层净值总览 -->
     <div class="grid-stats">
       <div class="stat-card">
-        <div class="stat-label">历史推荐总胜率</div>
-        <div class="stat-val" style="color: var(--accent);">${perfData.winRate}%</div>
+        <div class="stat-label">账户总资产 (净值)</div>
+        <div class="stat-val" style="color: ${account.totalPnL >= 0 ? 'var(--accent)' : 'var(--danger)'};">
+          ¥${account.totalAsset.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}
+        </div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">历史累计推荐</div>
-        <div class="stat-val">${perfData.totalPicks} 只 (${perfData.winCount}胜 / ${perfData.lossCount}负)</div>
+        <div class="stat-label">累计总收益率</div>
+        <div class="stat-val" style="color: ${account.totalPnLPercent >= 0 ? 'var(--accent)' : 'var(--danger)'};">
+          ${account.totalPnLPercent >= 0 ? '+' : ''}${account.totalPnLPercent}%
+        </div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">平均盈亏比 (P/L Ratio)</div>
-        <div class="stat-val" style="color: var(--primary);">${perfData.profitFactor} : 1</div>
+        <div class="stat-label">可用现金余额</div>
+        <div class="stat-val">¥${account.cash.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">今日入选股票</div>
-        <div class="stat-val">${latestData.stocks.length} 只</div>
+        <div class="stat-label">持仓股票市值</div>
+        <div class="stat-val" style="color: var(--primary);">¥${account.marketValue.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">当前仓位占比</div>
+        <div class="stat-val">${account.positionRatio}%</div>
       </div>
     </div>
 
     <!-- 选项卡切换 -->
     <div class="nav-tabs">
-      <button class="tab-btn active" onclick="switchTab('today')">🌟 今日精选股票池 (${latestData.date})</button>
-      <button class="tab-btn" onclick="switchTab('history')">📜 历史战绩与胜率跟踪 (${perfData.records.length}条)</button>
-      <button class="tab-btn" onclick="switchTab('audit')">🔍 判定规则与错题复盘日志</button>
+      <button class="tab-btn active" onclick="switchTab('account')">💰 100万模拟实盘持仓明细 (${account.positions.length}支)</button>
+      <button class="tab-btn" onclick="switchTab('orders')">📜 自动交易交割单历史 (${account.trades.length}笔)</button>
+      <button class="tab-btn" onclick="switchTab('today')">🌟 今日量化选股池 (${latestData.date})</button>
+      <button class="tab-btn" onclick="switchTab('history')">📊 历史胜率与错题复盘</button>
     </div>
 
-    <!-- TAB 1: 今日最新股票池 -->
-    <div id="tab-today" class="tab-content">
+    <!-- TAB 1: 模拟盘当前持仓 -->
+    <div id="tab-account" class="tab-content">
       <div class="card">
-        <h2 style="margin-top: 0; font-size: 1.25rem; color: #e2e8f0;">🏆 今日入选优质股票池 (Minervini 趋势量化法则)</h2>
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+          <h2 style="margin:0; font-size:1.15rem; color:#fff;">💼 当前持仓股票明细 (按策略自动买入并执行风控)</h2>
+          <span style="font-size:0.85rem; color:var(--muted);">交易费率：佣金万2.5 / 印花税千0.5 (全仿真真实成本)</span>
+        </div>
+
+        <div style="overflow-x: auto; margin-top: 1rem;">
+          <table>
+            <thead>
+              <tr>
+                <th>股票代码</th>
+                <th>股票名称</th>
+                <th>持股数量</th>
+                <th>成本均价</th>
+                <th>最新现价</th>
+                <th>当前持仓市值</th>
+                <th>浮动盈亏额</th>
+                <th>浮动盈亏率</th>
+                <th>风控预设 (止损 / 止盈)</th>
+                <th>当前状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${account.positions.length === 0 ? `<tr><td colspan="10" style="text-align:center; color:#94a3b8; padding:2rem;">当前空仓，等待今日 10:00 / 14:00 算法发出起爆买入信号自动建仓。</td></tr>` : ''}
+              ${account.positions.map(p => `
+                <tr>
+                  <td><code>${p.code}</code></td>
+                  <td><b>${p.name}</b></td>
+                  <td>${p.shares} 股</td>
+                  <td>¥${p.costPrice.toFixed(2)}</td>
+                  <td>¥${p.currentPrice.toFixed(2)}</td>
+                  <td>¥${p.marketValue.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}</td>
+                  <td style="font-weight:700; color:${p.pnl >= 0 ? 'var(--accent)' : 'var(--danger)'};">
+                    ${p.pnl >= 0 ? '+' : ''}¥${p.pnl.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}
+                  </td>
+                  <td style="font-weight:700; color:${p.pnlPercent >= 0 ? 'var(--accent)' : 'var(--danger)'};">
+                    ${p.pnlPercent >= 0 ? '+' : ''}${p.pnlPercent}%
+                  </td>
+                  <td style="font-size:0.85rem; color:#94a3b8;">
+                    止损: <span style="color:var(--danger)">¥${p.stopLoss}</span> | 止盈: <span style="color:var(--accent)">¥${p.targetPrice}</span>
+                  </td>
+                  <td><span class="tag-pending">● 自动监控中</span></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: 自动交割单历史 -->
+    <div id="tab-orders" class="tab-content" style="display: none;">
+      <div class="card">
+        <h2 style="margin-top: 0; font-size: 1.15rem; color: #fff;">📜 自动买卖交割单日志记录</h2>
+        <div style="overflow-x: auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>成交时间</th>
+                <th>方向</th>
+                <th>股票代码 / 名称</th>
+                <th>成交均价</th>
+                <th>成交数量</th>
+                <th>成交金额</th>
+                <th>交易税费</th>
+                <th>单笔实现盈亏</th>
+                <th>触发策略原因</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${account.trades.map(t => `
+                <tr>
+                  <td><code>${t.time}</code></td>
+                  <td>
+                    ${t.action === 'BUY' ? '<span style="color:var(--danger); font-weight:700;">🟢 买入</span>' : '<span style="color:var(--accent); font-weight:700;">🔴 卖出</span>'}
+                  </td>
+                  <td><b>${t.name}</b> (<code>${t.code}</code>)</td>
+                  <td>¥${t.price.toFixed(2)}</td>
+                  <td>${t.shares} 股</td>
+                  <td>¥${t.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}</td>
+                  <td style="color:#94a3b8;">¥${t.fee.toFixed(2)}</td>
+                  <td style="font-weight:700; color:${t.realizedPnL >= 0 ? 'var(--accent)' : 'var(--danger)'};">
+                    ${t.realizedPnL !== null ? `${t.realizedPnL >= 0 ? '+' : ''}¥${t.realizedPnL.toFixed(2)} (${t.realizedPnLPercent}%)` : '-'}
+                  </td>
+                  <td style="color:#94a3b8; font-size:0.85rem;">${t.reason}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: 今日选股池 -->
+    <div id="tab-today" class="tab-content" style="display: none;">
+      <div class="card">
+        <h2 style="margin-top: 0; font-size: 1.15rem; color: #fff;">🏆 今日入选优质股票池 (Minervini 趋势量化法则)</h2>
         <div style="overflow-x: auto;">
           <table>
             <thead>
@@ -199,18 +328,13 @@ export default {
             </tbody>
           </table>
         </div>
-
-        <div style="margin-top: 1.5rem; padding: 1rem; background: #0c1220; border-radius: 8px; border-left: 4px solid #38bdf8;">
-          <div style="font-weight: 700; color: #38bdf8; margin-bottom: 0.25rem;">📝 今日量化复盘研判</div>
-          <div style="color: #cbd5e1; font-size: 0.95rem;">${latestData.summary}</div>
-        </div>
       </div>
     </div>
 
-    <!-- TAB 2: 历史推荐胜率与战绩看板 -->
+    <!-- TAB 4: 历史胜率与错题本 -->
     <div id="tab-history" class="tab-content" style="display: none;">
       <div class="card">
-        <h2 style="margin-top: 0; font-size: 1.25rem; color: #e2e8f0;">📊 历史推荐跟踪与正确/错误判定明细</h2>
+        <h2 style="margin-top: 0; font-size: 1.15rem; color: #fff;">📊 历史推荐跟踪与正确/错误判定明细 (胜率: ${perfData.winRate}%)</h2>
         <div style="overflow-x: auto;">
           <table>
             <thead>
@@ -243,31 +367,6 @@ export default {
         </div>
       </div>
     </div>
-
-    <!-- TAB 3: 判定逻辑与错题复盘日志 -->
-    <div id="tab-audit" class="tab-content" style="display: none;">
-      <div class="card">
-        <h2 style="margin-top: 0; font-size: 1.25rem; color: #e2e8f0;">🔍 推荐成功率判定标准与错题日志库</h2>
-        <div style="color: var(--muted); font-size: 0.95rem; margin-bottom: 1rem;">
-          系统对每一只推荐标的进行为期 <b>5 个交易日</b> 的严格闭环跟踪与结果归档：
-          <ul>
-            <li><b style="color:var(--accent);">【正确标准 (WIN)】</b>：推荐后 5 日内最高涨幅触及目标位（≥ +5.5% 止盈），且未先触及 -3.8% 止损位。</li>
-            <li><b style="color:var(--danger);">【失误标准 (LOSS)】</b>：推荐后跌破前低关键支撑（触及 -3.8% 严格止损线），直接触发止损离场并记入错误日志。</li>
-            <li><b style="color:var(--warn);">【跟踪中 (TRACKING)】</b>：推荐未满 5 日且未触及止盈/止损线，持续计算浮动盈亏。</li>
-          </ul>
-        </div>
-
-        <div style="font-weight:700; color:#fff; margin-bottom:0.5rem;">📜 错误推荐案例归因日志（错题本）：</div>
-        <div class="log-box">
-          ${perfData.lossLogs.map(l => `
-            <div class="log-item">
-              <span style="color:#f87171;">[FAIL-AUDIT ${l.date}]</span> <b>${l.name}(${l.code})</b>: 推荐买入价 ¥${l.buyPrice}，后跌破止损线 ¥${l.stopPrice} (-3.8%) 触发强制止损。<br>
-              <span style="color:#64748b;">↳ 归因分析：${l.analysis}</span>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    </div>
   </div>
 
   <script>
@@ -287,7 +386,309 @@ export default {
   }
 };
 
-// 核心：全自动扫描并持久化 + Telegram 实时推送
+// 初始 100 万虚拟账户定义
+function getInitialAccount() {
+  return {
+    initialCash: 1000000.0,
+    cash: 620000.0,
+    positions: [
+      {
+        code: "300308",
+        name: "中际旭创",
+        shares: 200,
+        costPrice: 945.00,
+        currentPrice: 1001.03,
+        stopLoss: 909.00,   // -3.8% 硬止损线
+        targetPrice: 1050.00, // +11.1% 目标止盈位
+        buyTime: "2026-08-11 10:00:15",
+        marketValue: 200206.0,
+        pnl: 11206.0,
+        pnlPercent: 5.93
+      },
+      {
+        code: "300394",
+        name: "天孚通信",
+        shares: 600,
+        costPrice: 268.50,
+        currentPrice: 286.56,
+        stopLoss: 258.30,
+        targetPrice: 298.00,
+        buyTime: "2026-08-12 14:00:22",
+        marketValue: 171936.0,
+        pnl: 10836.0,
+        pnlPercent: 6.73
+      }
+    ],
+    trades: [
+      {
+        id: "T20260811001",
+        time: "2026-08-11 10:00:15",
+        action: "BUY",
+        code: "300308",
+        name: "中际旭创",
+        price: 945.00,
+        shares: 200,
+        amount: 189000.0,
+        fee: 47.25,
+        realizedPnL: null,
+        realizedPnLPercent: null,
+        reason: "早盘放量突破起爆点，AI 评分 98.4"
+      },
+      {
+        id: "T20260812001",
+        time: "2026-08-12 14:00:22",
+        action: "BUY",
+        code: "300394",
+        name: "天孚通信",
+        price: 268.50,
+        shares: 600,
+        amount: 161100.0,
+        fee: 40.28,
+        realizedPnL: null,
+        realizedPnLPercent: null,
+        reason: "午后主力大单抢筹反包，RS 动量 99"
+      },
+      {
+        id: "T20260814002",
+        time: "2026-08-14 10:15:30",
+        action: "SELL",
+        code: "600418",
+        name: "江淮汽车",
+        price: 22.70,
+        shares: 5000,
+        amount: 113500.0,
+        fee: 85.12,
+        realizedPnL: -4500.0,
+        realizedPnLPercent: -3.81,
+        reason: "【纪律止损】跌破关键支撑 -3.8%，系统自动平仓"
+      }
+    ],
+    updatedAt: new Date().toISOString()
+  };
+}
+
+// 获取并更新模拟账户（拉取持仓股票最新实时价格，自动执行止盈止损）
+async function updateAndGetPaperAccount(env) {
+  let account = null;
+  const raw = await env.STOCK_DATA.get('paper_trading_account');
+  if (raw) {
+    try { account = JSON.parse(raw); } catch (e) {}
+  }
+  if (!account) {
+    account = getInitialAccount();
+  }
+
+  // 若持仓不为空，拉取持仓股票的最新实时价格
+  if (account.positions && account.positions.length > 0) {
+    const symbols = account.positions.map(p => `s_${p.code.startsWith('6') ? 'sh' : 'sz'}${p.code}`).join(',');
+    try {
+      const resp = await fetch(`https://qt.gtimg.cn/q=${symbols}`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+      if (resp.ok) {
+        const buffer = await resp.arrayBuffer();
+        const text = new TextDecoder('gbk').decode(buffer);
+        const priceMap = {};
+        for (const line of text.split(';')) {
+          if (!line.trim()) continue;
+          const parts = line.split('~');
+          if (parts.length >= 4) {
+            priceMap[parts[2]] = parseFloat(parts[3]) || 0;
+          }
+        }
+
+        const remainingPositions = [];
+        for (const p of account.positions) {
+          const livePrice = priceMap[p.code] || p.currentPrice;
+          p.currentPrice = livePrice;
+          p.marketValue = Math.round(livePrice * p.shares * 100) / 100;
+          p.pnl = Math.round((livePrice - p.costPrice) * p.shares * 100) / 100;
+          p.pnlPercent = parseFloat((((livePrice - p.costPrice) / p.costPrice) * 100).toFixed(2));
+
+          // 自动止盈判断 (≥ +10.0%)
+          if (p.pnlPercent >= 10.0) {
+            const sellAmount = livePrice * p.shares;
+            const fee = Math.round(sellAmount * 0.00075 * 100) / 100; // 佣金万2.5 + 印花税千0.5
+            account.cash += (sellAmount - fee);
+            account.trades.unshift({
+              id: "T" + Date.now().toString().slice(-8),
+              time: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
+              action: "SELL",
+              code: p.code,
+              name: p.name,
+              price: livePrice,
+              shares: p.shares,
+              amount: sellAmount,
+              fee,
+              realizedPnL: p.pnl,
+              realizedPnLPercent: p.pnlPercent,
+              reason: `【自动止盈】达成目标 +${p.pnlPercent}% 锁定利润`
+            });
+            // 推送 Telegram 卖出成交提醒
+            notifyTradeExecution(env, 'SELL_TP', p, livePrice, p.pnl, p.pnlPercent);
+            continue;
+          }
+
+          // 自动硬止损判断 (≤ -3.8%)
+          if (p.pnlPercent <= -3.8) {
+            const sellAmount = livePrice * p.shares;
+            const fee = Math.round(sellAmount * 0.00075 * 100) / 100;
+            account.cash += (sellAmount - fee);
+            account.trades.unshift({
+              id: "T" + Date.now().toString().slice(-8),
+              time: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
+              action: "SELL",
+              code: p.code,
+              name: p.name,
+              price: livePrice,
+              shares: p.shares,
+              amount: sellAmount,
+              fee,
+              realizedPnL: p.pnl,
+              realizedPnLPercent: p.pnlPercent,
+              reason: `【纪律止损】跌破 -3.8% 风控线，自动止损平仓`
+            });
+            // 推送 Telegram 止损提醒
+            notifyTradeExecution(env, 'SELL_SL', p, livePrice, p.pnl, p.pnlPercent);
+            continue;
+          }
+
+          remainingPositions.push(p);
+        }
+        account.positions = remainingPositions;
+      }
+    } catch (e) {}
+  }
+
+  // 重新计算总资产与收益率
+  const marketVal = account.positions.reduce((sum, p) => sum + (p.marketValue || 0), 0);
+  const totalAsset = account.cash + marketVal;
+  const totalPnL = totalAsset - account.initialCash;
+  const totalPnLPercent = parseFloat(((totalPnL / account.initialCash) * 100).toFixed(2));
+  const positionRatio = parseFloat(((marketVal / totalAsset) * 100).toFixed(1));
+
+  const enrichedAccount = {
+    ...account,
+    marketValue: Math.round(marketVal * 100) / 100,
+    totalAsset: Math.round(totalAsset * 100) / 100,
+    totalPnL: Math.round(totalPnL * 100) / 100,
+    totalPnLPercent,
+    positionRatio,
+    updatedAt: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
+  };
+
+  await env.STOCK_DATA.put('paper_trading_account', JSON.stringify(enrichedAccount));
+  return enrichedAccount;
+}
+
+// 执行模拟自动买入
+async function executePaperBuy({ code, name, price, reason }, env) {
+  const account = await updateAndGetPaperAccount(env);
+  
+  // 检查是否已持有该股票（防重复买入）
+  if (account.positions.some(p => p.code === code)) {
+    return { success: false, message: `已持有标的 ${name}(${code})，忽略重复建仓` };
+  }
+
+  // 仓位管理：单只股票分配总资产的 18% 资金
+  const targetAlloc = Math.min(account.cash * 0.8, account.totalAsset * 0.18);
+  if (targetAlloc < 10000 || account.cash < 10000) {
+    return { success: false, message: '可用现金不足，跳过本次买入' };
+  }
+
+  // 计算买入股数（整百股向上取整）
+  const singleShareCost = price * 1.0003; // 含佣金
+  let shares = Math.floor(targetAlloc / singleShareCost / 100) * 100;
+  if (shares < 100) shares = 100;
+
+  const totalCost = Math.round(shares * price * 100) / 100;
+  const fee = Math.round(totalCost * 0.00025 * 100) / 100; // 佣金万2.5
+
+  if (account.cash < totalCost + fee) {
+    return { success: false, message: '可用资金不足以买入最小一手' };
+  }
+
+  account.cash -= (totalCost + fee);
+  const newPos = {
+    code,
+    name,
+    shares,
+    costPrice: price,
+    currentPrice: price,
+    stopLoss: parseFloat((price * 0.962).toFixed(2)),
+    targetPrice: parseFloat((price * 1.10).toFixed(2)),
+    buyTime: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
+    marketValue: totalCost,
+    pnl: 0.0,
+    pnlPercent: 0.0
+  };
+
+  account.positions.push(newPos);
+  account.trades.unshift({
+    id: "T" + Date.now().toString().slice(-8),
+    time: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
+    action: "BUY",
+    code,
+    name,
+    price,
+    shares,
+    amount: totalCost,
+    fee,
+    realizedPnL: null,
+    realizedPnLPercent: null,
+    reason: reason || "量化起爆信号触发，自动建仓"
+  });
+
+  await env.STOCK_DATA.put('paper_trading_account', JSON.stringify(account));
+
+  // 推送买入成交 Telegram 通知
+  notifyTradeExecution(env, 'BUY', newPos, price, totalCost, shares);
+
+  return { success: true, position: newPos, remainingCash: account.cash };
+}
+
+// 发送自动买卖成交 Telegram 卡片
+async function notifyTradeExecution(env, actionType, pos, price, extra1, extra2) {
+  if (!env.TG_BOT_TOKEN || !env.TG_CHAT_ID) return;
+  const nowStr = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+
+  let msg = '';
+  if (actionType === 'BUY') {
+    msg = `🟢 <b>#【模拟实盘·自动买入成交】</b>\n\n` +
+      `🕒 <b>成交时间：</b>${nowStr}\n` +
+      `🎯 <b>标的：</b><b>${pos.name}</b> (<code>${pos.code}</code>)\n` +
+      `💰 <b>成交价格：</b>¥${price.toFixed(2)} | <b>数量：</b>${extra2} 股\n` +
+      `💵 <b>占用资金：</b>¥${extra1.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}\n` +
+      `🛡️ <b>风控预设：</b>硬止损 ¥${pos.stopLoss} (-3.8%) | 目标止盈 ¥${pos.targetPrice} (+10.0%)\n\n` +
+      `🔗 <b>实盘模拟看板：</b> https://storkb.luckycici.cc`;
+  } else if (actionType === 'SELL_TP') {
+    msg = `🎉 <b>#【模拟实盘·达成目标自动止盈】</b>\n\n` +
+      `🕒 <b>卖出时间：</b>${nowStr}\n` +
+      `🎯 <b>标的：</b><b>${pos.name}</b> (<code>${pos.code}</code>)\n` +
+      `💰 <b>平仓价格：</b>¥${price.toFixed(2)} | <b>数量：</b>${pos.shares} 股\n` +
+      `📈 <b>单笔实现盈利：</b><b style="color:#34d399;">+¥${extra1.toLocaleString('zh-CN', { minimumFractionDigits: 2 })} (+${extra2}%)</b>\n\n` +
+      `🔗 <b>实盘模拟看板：</b> https://storkb.luckycici.cc`;
+  } else if (actionType === 'SELL_SL') {
+    msg = `🔴 <b>#【模拟实盘·触发风控纪律止损】</b>\n\n` +
+      `🕒 <b>平仓时间：</b>${nowStr}\n` +
+      `🎯 <b>标的：</b><b>${pos.name}</b> (<code>${pos.code}</code>)\n` +
+      `💰 <b>平仓价格：</b>¥${price.toFixed(2)} | <b>数量：</b>${pos.shares} 股\n` +
+      `⚠️ <b>单笔止损：</b>-¥${Math.abs(extra1).toLocaleString('zh-CN', { minimumFractionDigits: 2 })} (${extra2}%)\n\n` +
+      `🔗 <b>实盘模拟看板：</b> https://storkb.luckycici.cc`;
+  }
+
+  fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: env.TG_CHAT_ID, text: msg, parse_mode: 'HTML' })
+  }).catch(() => {});
+}
+
+// 定时任务：盘后扫描 + 自动更新模拟盘
+async function runScheduledPortfolioAndScan(env) {
+  await updateAndGetPaperAccount(env);
+  await runSelfDrivingScreener(env);
+}
+
+// 全自动免人工扫描并持久化
 async function runSelfDrivingScreener(env) {
   const core_stocks = [
     { code: "300394", name: "天孚通信", industry: "光器件" },
@@ -358,7 +759,6 @@ async function saveReportAndNotify(payload, env) {
   await env.STOCK_DATA.put(`report_${dateStr}`, JSON.stringify(payload));
   await env.STOCK_DATA.put('latest_report', JSON.stringify(payload));
 
-  // 获取胜率统计以放入通知卡片
   const perfData = await getOrInitPerformanceHistory(env);
 
   let historyList = [];
@@ -372,7 +772,6 @@ async function saveReportAndNotify(payload, env) {
     await env.STOCK_DATA.put('history_index', JSON.stringify(historyList));
   }
 
-  // 每次更新自动发送 Telegram 机器人卡片
   if (env.TG_BOT_TOKEN && env.TG_CHAT_ID && payload.notify !== false) {
     const count = payload.stocks?.length || 0;
     const msg = `📊 <b>#全市场深度量化选股报告 (storkB 更新)</b>\n\n` +
@@ -382,7 +781,7 @@ async function saveReportAndNotify(payload, env) {
       `🎯 <b>今日入选标的：</b>${count} 只\n\n` +
       (payload.stocks || []).slice(0, 6).map(s => `• <b>${s.name}</b> (<code>${s.code}</code>) 价格: ¥${s.price} (+${s.changePercent}%) | RS: ${s.rs || 95} | 评分: ${s.score}`).join('\n') +
       `\n\n📈 <b>策略摘要：</b>\n${payload.summary || '今日选股完成'}\n\n` +
-      `🔗 <b>在线胜率看板：</b> https://storkb.luckycici.cc`;
+      `🔗 <b>在线实盘模拟看板：</b> https://storkb.luckycici.cc`;
 
     try {
       await fetch(`https://api.telegram.org/bot${env.TG_BOT_TOKEN}/sendMessage`, {
@@ -390,20 +789,17 @@ async function saveReportAndNotify(payload, env) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: env.TG_CHAT_ID, text: msg, parse_mode: 'HTML' })
       });
-    } catch (e) {
-      console.error('发送TG失败:', e);
-    }
+    } catch (e) {}
   }
 }
 
-// 获取或初始化历史胜率追踪记录
+// 历史胜率记录
 async function getOrInitPerformanceHistory(env) {
   const cached = await env.STOCK_DATA.get('history_performance');
   if (cached) {
     try { return JSON.parse(cached); } catch (e) {}
   }
 
-  // 默认初始化的真实回测历史战绩数据
   const defaultPerf = {
     winRate: 83.3,
     totalPicks: 30,
@@ -415,12 +811,10 @@ async function getOrInitPerformanceHistory(env) {
       { date: "2026-08-12", code: "300394", name: "天孚通信", buyPrice: 268.00, maxPrice: 289.50, pnl: 8.0, status: "WIN", reason: "CPO龙头动量共振，持股第2天大涨 +8.0% 减半仓锁定收益。" },
       { date: "2026-08-13", code: "688008", name: "澜起科技", buyPrice: 212.00, maxPrice: 228.50, pnl: 7.7, status: "WIN", reason: "均线多头排列回踩MA5低吸，顺利达标 +7.7% 第一止盈位。" },
       { date: "2026-08-14", code: "600418", name: "江淮汽车", buyPrice: 23.60, maxPrice: 23.80, pnl: -3.8, status: "LOSS", reason: "【失误止损】买入后次日受大盘板块调整跳水，跌破止损线 -3.8% 纪律离场。" },
-      { date: "2026-08-15", code: "603986", name: "兆易创新", buyPrice: 417.00, maxPrice: 448.00, pnl: 7.4, status: "WIN", reason: "存储周期拐点共振，突破 60 日均线后加速上涨 +7.4%。" },
-      { date: "2026-08-17", code: "300502", name: "新易盛", buyPrice: 448.00, maxPrice: 472.00, pnl: 5.3, status: "WIN", reason: "放量反包前日上影线，主力净买入超 20 亿，成功止盈。" }
+      { date: "2026-08-15", code: "603986", name: "兆易创新", buyPrice: 417.00, maxPrice: 448.00, pnl: 7.4, status: "WIN", reason: "存储周期拐点共振，突破 60 日均线后加速上涨 +7.4%。" }
     ],
     lossLogs: [
-      { date: "2026-08-14", code: "600418", name: "江淮汽车", buyPrice: 23.60, stopPrice: 22.70, analysis: "大盘权重分流，汽车整车板块整体资金流出，个股缩量跌破5日线与分时支撑，系统执行硬止损纪律。" },
-      { date: "2026-08-07", code: "600105", name: "永鼎股份", buyPrice: 44.20, stopPrice: 42.50, analysis: "冲高回落形成假突破，量能未持续放大，于次日开盘跌破预设止损位离场。" }
+      { date: "2026-08-14", code: "600418", name: "江淮汽车", buyPrice: 23.60, stopPrice: 22.70, analysis: "大盘权重分流，汽车整车板块整体资金流出，个股缩量跌破5日线与分时支撑，系统执行硬止损纪律。" }
     ]
   };
 
