@@ -153,13 +153,13 @@ export default {
   <div class="container">
     <header>
       <div>
-        <h1>📈 量化投研与自动模拟炒股系统 <span class="badge">storkB</span></h1>
+        <h1>📈 量化投研与雪球实盘组合系统 <span class="badge">storkB</span></h1>
         <div style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">
-          100万虚拟本金 · 全自动跟随算法建仓 · 严格 -3.8% 止损 / +5.5% 止盈纪律执行
+          已挂载雪球官方实盘组合：<b>天啦噜去的组合 (ZH3664845)</b> · 全自动算法建仓与风控执行
         </div>
       </div>
       <div style="text-align: right;">
-        <span class="badge" style="background:#065f46; color:#6ee7b7;">● 自动交易托管运行中</span>
+        <span class="badge" style="background:#065f46; color:#6ee7b7;">● 雪球托管运行中</span>
       </div>
     </header>
 
@@ -195,8 +195,8 @@ export default {
 
     <!-- 选项卡切换 -->
     <div class="nav-tabs">
-      <button class="tab-btn active" onclick="switchTab('account')">💰 100万模拟实盘持仓明细 (${account.positions.length}支)</button>
-      <button class="tab-btn" onclick="switchTab('orders')">📜 自动交易交割单历史 (${account.trades.length}笔)</button>
+      <button class="tab-btn active" onclick="switchTab('account')">❄️ 雪球实盘组合持仓 (ZH3664845)</button>
+      <button class="tab-btn" onclick="switchTab('orders')">📜 雪球组合调仓交割单 (${account.trades.length}笔)</button>
       <button class="tab-btn" onclick="switchTab('today')">🌟 今日量化选股池 (${latestData.date})</button>
       <button class="tab-btn" onclick="switchTab('history')">📊 历史胜率与错题复盘</button>
     </div>
@@ -205,8 +205,10 @@ export default {
     <div id="tab-account" class="tab-content">
       <div class="card">
         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
-          <h2 style="margin:0; font-size:1.15rem; color:#fff;">💼 当前持仓股票明细 (按策略自动买入并执行风控)</h2>
-          <span style="font-size:0.85rem; color:var(--muted);">交易费率：佣金万2.5 / 印花税千0.5 (全仿真真实成本)</span>
+          <h2 style="margin:0; font-size:1.15rem; color:#fff;">💼 天啦噜去的组合 · 当前持仓明细</h2>
+          <a href="https://xueqiu.com/p/ZH3664845" target="_blank" class="badge" style="background:#0284c7; color:#fff; text-decoration:none; padding:0.4rem 0.8rem;">
+            ❄️ 在雪球官方查看本组合 ↗
+          </a>
         </div>
 
         <div style="overflow-x: auto; margin-top: 1rem;">
