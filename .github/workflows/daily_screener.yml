@@ -1,0 +1,27 @@
+name: Daily Stock Screener & Sync to storkB
+
+on:
+  schedule:
+    # 北京时间周一至周五 15:35 自动运行 (UTC 07:35)
+    - cron: '35 7 * * 1-5'
+  workflow_dispatch: # 支持在 GitHub 网页上一键手动点击触发
+
+jobs:
+  screen-and-sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python 运行环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 执行全市场 Minervini 趋势量化扫描与同步
+        env:
+          SCREENER_API: "https://storkb.luckycici.cc/api/sync"
+          SYNC_SECRET: ${{ secrets.SYNC_SECRET || 'wangrunxi_screener_sync_key' }}
+        run: |
+          python scripts/daily_screener.py

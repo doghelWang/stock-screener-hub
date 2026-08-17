@@ -1,0 +1,12 @@
+name = "stock-screener-hub"
+main = "src/index.js"
+compatibility_date = "2024-04-01"
+
+[[kv_namespaces]]
+binding = "STOCK_DATA"
+id = "5a7168f38c7e47a48154f64812014037"
+
+[vars]
+TG_BOT_TOKEN = "8638970213:AAEFSue15RAajMQE1iKz4K9yQoNjT5-jkOU"
+TG_CHAT_ID = "1099933423"
+SYNC_SECRET = "wangrunxi_screener_sync_key"
