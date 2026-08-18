@@ -652,23 +652,52 @@ async function executePaperBuy({ code, name, price, reason }, env) {
   return { success: true, position: newPos, remainingCash: account.cash };
 }
 
-// 自动向雪球官方服务器发起组合真实调仓请求
-async function syncRebalanceToOfficialXueqiu(env, comment = "AI 量化实盘自适应调仓") {
+// 自动向雪球官方服务器发起组合真实调仓请求（全自动在 Cloudflare Worker 端执行）
+async function syncRebalanceToOfficialXueqiu(env, comment = "Google Gemini 3.7 量化实盘自适应调仓") {
   if (!env.XUEQIU_COOKIE) return;
   try {
     const raw = await env.STOCK_DATA.get('paper_trading_account');
     if (!raw) return;
     const account = JSON.parse(raw);
-    const holdings = (account.positions || []).map(p => {
-      const symbol = p.code.startsWith('6') ? `SH${p.code}` : `SZ${p.code}`;
+    const positions = account.positions || [];
+    if (positions.length === 0) return;
+
+    // 动态拉取每只股票在雪球官方的 stock_id 与行业分类
+    const holdings = [];
+    for (const p of positions) {
+      let stockId = null;
+      let symbol = p.code.startsWith('6') ? `SH${p.code}` : `SZ${p.code}`;
+      let segName = "电子";
+
+      try {
+        const sRes = await fetch(`https://xueqiu.com/stock/search.json?code=${p.code}`, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Cookie': env.XUEQIU_COOKIE,
+            'Referer': 'https://xueqiu.com/p/ZH3664845'
+          }
+        });
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          const item = sData?.stocks?.[0];
+          if (item) {
+            stockId = item.stock_id;
+            symbol = item.code || symbol;
+            segName = item.ind_name || segName;
+          }
+        }
+      } catch (e) {}
+
       const weight = Math.min(95, Math.max(1, Math.round((p.marketValue / account.totalAsset) * 100 * 10) / 10));
-      return {
+      const hItem = {
         stock_symbol: symbol,
         weight,
-        segment_name: "其他",
-        reason: `AI 评分量化建仓`
+        segment_name: segName,
+        reason: "AI 量化龙头策略自适应配置"
       };
-    });
+      if (stockId) hItem.stock_id = stockId;
+      holdings.push(hItem);
+    }
 
     const body = new URLSearchParams({
       cube_symbol: 'ZH3664845',
@@ -676,7 +705,7 @@ async function syncRebalanceToOfficialXueqiu(env, comment = "AI 量化实盘自�
       comment: `天啦噜去：${comment}`
     });
 
-    await fetch('https://xueqiu.com/cubes/rebalancing/create.json', {
+    const res = await fetch('https://xueqiu.com/cubes/rebalancing/create.json', {
       method: 'POST',
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -687,6 +716,11 @@ async function syncRebalanceToOfficialXueqiu(env, comment = "AI 量化实盘自�
       },
       body: body.toString()
     });
+
+    if (res.ok) {
+      const data = await res.json();
+      console.log('✅ 雪球官方调仓成功, 调仓单号:', data.id);
+    }
   } catch (e) {
     console.error('雪球官方调仓同步异常:', e);
   }
