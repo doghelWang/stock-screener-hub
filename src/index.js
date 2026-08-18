@@ -643,10 +643,53 @@ async function executePaperBuy({ code, name, price, reason }, env) {
 
   await env.STOCK_DATA.put('paper_trading_account', JSON.stringify(account));
 
-  // 推送买入成交 Telegram 通知
+  // 1. 同步向雪球官方服务器发起真实调仓请求
+  syncRebalanceToOfficialXueqiu(env, reason || `量化建仓 ${name}(${code})`).catch(() => {});
+
+  // 2. 推送买入成交 Telegram 通知
   notifyTradeExecution(env, 'BUY', newPos, price, totalCost, shares);
 
   return { success: true, position: newPos, remainingCash: account.cash };
+}
+
+// 自动向雪球官方服务器发起组合真实调仓请求
+async function syncRebalanceToOfficialXueqiu(env, comment = "AI 量化实盘自适应调仓") {
+  if (!env.XUEQIU_COOKIE) return;
+  try {
+    const raw = await env.STOCK_DATA.get('paper_trading_account');
+    if (!raw) return;
+    const account = JSON.parse(raw);
+    const holdings = (account.positions || []).map(p => {
+      const symbol = p.code.startsWith('6') ? `SH${p.code}` : `SZ${p.code}`;
+      const weight = Math.min(95, Math.max(1, Math.round((p.marketValue / account.totalAsset) * 100 * 10) / 10));
+      return {
+        stock_symbol: symbol,
+        weight,
+        segment_name: "其他",
+        reason: `AI 评分量化建仓`
+      };
+    });
+
+    const body = new URLSearchParams({
+      cube_symbol: 'ZH3664845',
+      holdings: JSON.stringify(holdings),
+      comment: `天啦噜去：${comment}`
+    });
+
+    await fetch('https://xueqiu.com/cubes/rebalancing/create.json', {
+      method: 'POST',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Cookie': env.XUEQIU_COOKIE,
+        'Referer': 'https://xueqiu.com/p/ZH3664845',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: body.toString()
+    });
+  } catch (e) {
+    console.error('雪球官方调仓同步异常:', e);
+  }
 }
 
 // 发送自动买卖成交 Telegram 卡片
