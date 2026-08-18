@@ -158,7 +158,8 @@ export default {
           已挂载雪球官方实盘组合：<b>天啦噜去的组合 (ZH3664845)</b> · 全自动算法建仓与风控执行
         </div>
       </div>
-      <div style="text-align: right;">
+      <div style="text-align: right; display: flex; align-items: center; gap: 0.5rem; justify-content: flex-end;">
+        <span id="storkb-model-badge" class="badge" style="background:rgba(16,185,129,0.15); border:1px solid rgba(16,185,129,0.4); color:#34d399;">🧠 Google Gemini 3.7 Flash 官方旗舰</span>
         <span class="badge" style="background:#065f46; color:#6ee7b7;">● 雪球托管运行中</span>
       </div>
     </header>
@@ -380,6 +381,35 @@ export default {
       document.getElementById('tab-' + tabName).style.display = 'block';
       event.target.classList.add('active');
     }
+
+    // 实时同步感知 AI 激活模型与降级状态
+    setInterval(async () => {
+      try {
+        const res = await fetch('https://storka.luckycici.cc/api/quota');
+        if (res.ok) {
+          const data = await res.json();
+          const badge = document.getElementById('storkb-model-badge');
+          if (badge && data.engineName) {
+            badge.innerHTML = '🧠 ' + data.engineName;
+            if (data.isDowngraded) {
+              if (data.tierLevel === 2) {
+                badge.style.background = 'rgba(251, 191, 36, 0.15)';
+                badge.style.borderColor = 'rgba(251, 191, 36, 0.5)';
+                badge.style.color = '#fbbf24';
+              } else {
+                badge.style.background = 'rgba(192, 132, 252, 0.15)';
+                badge.style.borderColor = 'rgba(192, 132, 252, 0.5)';
+                badge.style.color = '#c084fc';
+              }
+            } else {
+              badge.style.background = 'rgba(16, 185, 129, 0.15)';
+              badge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+              badge.style.color = '#34d399';
+            }
+          }
+        }
+      } catch (e) {}
+    }, 6000);
   </script>
 </body>
 </html>`;
