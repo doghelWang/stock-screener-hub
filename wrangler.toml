@@ -2,6 +2,11 @@ name = "stock-screener-hub"
 main = "src/index.js"
 compatibility_date = "2024-04-01"
 
+routes = [
+  { pattern = "storkb.luckycici.cc", custom_domain = true },
+  { pattern = "stockb.luckycici.cc", custom_domain = true }
+]
+
 [[kv_namespaces]]
 binding = "STOCK_DATA"
 id = "5a7168f38c7e47a48154f64812014037"
