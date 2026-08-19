@@ -1,6 +1,7 @@
 name = "stock-screener-hub"
 main = "src/index.js"
 compatibility_date = "2024-04-01"
+workers_dev = true
 
 routes = [
   { pattern = "storkb.luckycici.cc", custom_domain = true },
